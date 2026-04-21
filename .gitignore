@@ -72,7 +72,7 @@ output/
 .cache/
 
 # ─── slack-etl runtime outputs ────────────────────────
-database.sqlite
+database.sqlite*
 data/
 _attachments/
 logs/
