@@ -70,3 +70,10 @@ output/
 *.wav
 *.srt
 .cache/
+
+# ─── slack-etl runtime outputs ────────────────────────
+database.sqlite
+data/
+_attachments/
+logs/
+*.plist
