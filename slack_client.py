@@ -6,6 +6,8 @@ import requests
 from slack_sdk import WebClient
 from slack_sdk.errors import SlackApiError
 
+from models import Channel, File, Message, User
+
 # ============================================================================
 # Constants
 # ============================================================================
@@ -55,10 +57,9 @@ class SlackClient:
             response={"error": "ratelimited"}
         )
 
-    def iter_users(self) -> Iterator[dict]:
+    def iter_users(self) -> Iterator[User]:
         """
         Yield every user (non-deleted, non-bot).
-        Yields dicts with: id, name, real_name
         """
         cursor = None
         while True:
@@ -68,23 +69,21 @@ class SlackClient:
                 limit=PAGE_SIZE
             )
             for member in resp.get("members", []):
-                # Skip deleted or bot accounts
                 if member.get("deleted") or member.get("is_bot"):
                     continue
-                yield {
-                    "id": member.get("id"),
-                    "name": member.get("name"),
-                    "real_name": member.get("real_name"),
-                }
+                yield User(
+                    id=member.get("id"),
+                    name=member.get("name"),
+                    real_name=member.get("real_name"),
+                )
 
             cursor = resp.get("response_metadata", {}).get("next_cursor")
             if not cursor:
                 break
 
-    def iter_channels(self) -> Iterator[dict]:
+    def iter_channels(self) -> Iterator[Channel]:
         """
         Yield every channel (non-archived, public + private).
-        Yields dicts with: id, name, is_private
         """
         cursor = None
         while True:
@@ -96,22 +95,35 @@ class SlackClient:
                 exclude_archived=True
             )
             for ch in resp.get("channels", []):
-                yield {
-                    "id": ch.get("id"),
-                    "name": ch.get("name"),
-                    "is_private": ch.get("is_private"),
-                }
+                yield Channel(
+                    id=ch.get("id"),
+                    name=ch.get("name"),
+                    is_private=ch.get("is_private"),
+                )
 
             cursor = resp.get("response_metadata", {}).get("next_cursor")
             if not cursor:
                 break
 
-    def iter_history(self, channel_id: str, oldest: Optional[str] = None) -> Iterator[dict]:
-        """
-        Yield messages from a channel (newest to oldest, then reverse to yield oldest first).
-        oldest is an exclusive lower bound (pass last_fetched_ts from sync_state).
+    def _parse_message(self, msg: dict) -> Message:
+        """Convert a raw Slack message dict to a Message dataclass."""
+        ts = msg.get("ts")
+        return Message(
+            ts=ts,
+            user=msg.get("user"),
+            text=msg.get("text"),
+            thread_ts=msg.get("thread_ts"),
+            files=[
+                File(id=f["id"], message_ts=ts, url=f.get("url_private_download"))
+                for f in msg.get("files", [])
+                if f.get("id")
+            ],
+        )
 
-        Yields dicts with: ts, user, text, thread_ts, files
+    def iter_history(self, channel_id: str, oldest: Optional[str] = None) -> Iterator[Message]:
+        """
+        Yield messages from a channel oldest-first.
+        oldest is an exclusive lower bound (pass last_fetched_ts from sync_state).
         """
         cursor = None
         while True:
@@ -122,25 +134,17 @@ class SlackClient:
                 limit=PAGE_SIZE,
                 oldest=oldest
             )
-            # conversations.history returns newest-first; collect and reverse for chronological order
             messages = resp.get("messages", [])
             for msg in reversed(messages):
-                yield {
-                    "ts": msg.get("ts"),
-                    "user": msg.get("user"),
-                    "text": msg.get("text"),
-                    "thread_ts": msg.get("thread_ts"),
-                    "files": msg.get("files", []),
-                }
+                yield self._parse_message(msg)
 
             cursor = resp.get("response_metadata", {}).get("next_cursor")
             if not cursor:
                 break
 
-    def iter_replies(self, channel_id: str, thread_ts: str) -> Iterator[dict]:
+    def iter_replies(self, channel_id: str, thread_ts: str) -> Iterator[Message]:
         """
         Yield reply messages in a thread (skips parent at index 0).
-        Yields dicts with: ts, user, text, thread_ts, files
         """
         cursor = None
         first_page = True
@@ -154,16 +158,9 @@ class SlackClient:
             )
             messages = resp.get("messages", [])
 
-            # Skip parent (index 0) on first page only
             start_idx = 1 if first_page else 0
             for msg in messages[start_idx:]:
-                yield {
-                    "ts": msg.get("ts"),
-                    "user": msg.get("user"),
-                    "text": msg.get("text"),
-                    "thread_ts": msg.get("thread_ts"),
-                    "files": msg.get("files", []),
-                }
+                yield self._parse_message(msg)
 
             first_page = False
             cursor = resp.get("response_metadata", {}).get("next_cursor")

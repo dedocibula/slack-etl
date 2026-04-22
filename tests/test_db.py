@@ -11,6 +11,7 @@ from db import (
     get_last_fetched_ts,
     update_sync_state,
 )
+from models import Channel, File, Message, User
 
 
 class TestSchemaInitialization:
@@ -43,10 +44,8 @@ class TestSchemaInitialization:
 
     def test_init_schema_is_idempotent(self, db_conn):
         """init_schema can be called multiple times safely."""
-        # Call it again (it's already called in conftest fixture)
         init_schema(db_conn)
 
-        # Verify tables still exist
         cursor = db_conn.cursor()
         tables = cursor.execute(
             "SELECT name FROM sqlite_master WHERE type='table'"
@@ -59,7 +58,7 @@ class TestUpsertChannel:
 
     def test_upsert_channel_inserts_new(self, db_conn):
         """upsert_channel inserts new channel."""
-        upsert_channel(db_conn, "C123", "general", 0)
+        upsert_channel(db_conn, Channel(id="C123", name="general", is_private=False))
 
         row = db_conn.execute(
             "SELECT id, name, is_private FROM channels WHERE id = ?",
@@ -72,8 +71,8 @@ class TestUpsertChannel:
 
     def test_upsert_channel_replaces_existing(self, db_conn):
         """upsert_channel replaces existing channel."""
-        upsert_channel(db_conn, "C123", "general", 0)
-        upsert_channel(db_conn, "C123", "updated-name", 1)
+        upsert_channel(db_conn, Channel(id="C123", name="general", is_private=False))
+        upsert_channel(db_conn, Channel(id="C123", name="updated-name", is_private=True))
 
         row = db_conn.execute(
             "SELECT name, is_private FROM channels WHERE id = ?",
@@ -85,7 +84,7 @@ class TestUpsertChannel:
 
     def test_upsert_channel_private_flag(self, db_conn):
         """upsert_channel correctly stores is_private flag."""
-        upsert_channel(db_conn, "C456", "secret", 1)
+        upsert_channel(db_conn, Channel(id="C456", name="secret", is_private=True))
 
         row = db_conn.execute(
             "SELECT is_private FROM channels WHERE id = ?",
@@ -100,7 +99,7 @@ class TestUpsertUser:
 
     def test_upsert_user_with_real_name(self, db_conn):
         """upsert_user inserts user with real_name."""
-        upsert_user(db_conn, "U123", "john", "John Doe")
+        upsert_user(db_conn, User(id="U123", name="john", real_name="John Doe"))
 
         row = db_conn.execute(
             "SELECT id, name, real_name FROM users WHERE id = ?",
@@ -113,7 +112,7 @@ class TestUpsertUser:
 
     def test_upsert_user_nullable_real_name(self, db_conn):
         """upsert_user handles nullable real_name."""
-        upsert_user(db_conn, "U456", "bot-user", None)
+        upsert_user(db_conn, User(id="U456", name="bot-user"))
 
         row = db_conn.execute(
             "SELECT real_name FROM users WHERE id = ?",
@@ -124,8 +123,8 @@ class TestUpsertUser:
 
     def test_upsert_user_replaces_existing(self, db_conn):
         """upsert_user replaces existing user."""
-        upsert_user(db_conn, "U123", "oldname", "Old Name")
-        upsert_user(db_conn, "U123", "newname", "New Name")
+        upsert_user(db_conn, User(id="U123", name="oldname", real_name="Old Name"))
+        upsert_user(db_conn, User(id="U123", name="newname", real_name="New Name"))
 
         row = db_conn.execute(
             "SELECT name, real_name FROM users WHERE id = ?",
@@ -141,10 +140,10 @@ class TestInsertMessage:
 
     def test_insert_message_basic(self, db_conn):
         """insert_message stores message."""
-        upsert_channel(db_conn, "C123", "general", 0)
-        upsert_user(db_conn, "U123", "john", "John")
+        upsert_channel(db_conn, Channel(id="C123", name="general"))
+        upsert_user(db_conn, User(id="U123", name="john", real_name="John"))
 
-        insert_message(db_conn, "1234567890.000100", "C123", "U123", "Hello", None)
+        insert_message(db_conn, "C123", Message(ts="1234567890.000100", user="U123", text="Hello"))
 
         row = db_conn.execute(
             "SELECT ts, channel_id, user_id, text FROM messages WHERE ts = ?",
@@ -158,9 +157,9 @@ class TestInsertMessage:
 
     def test_insert_message_without_user(self, db_conn):
         """insert_message handles app messages without user."""
-        upsert_channel(db_conn, "C123", "general", 0)
+        upsert_channel(db_conn, Channel(id="C123", name="general"))
 
-        insert_message(db_conn, "1234567890.000100", "C123", None, "App message", None)
+        insert_message(db_conn, "C123", Message(ts="1234567890.000100", text="App message"))
 
         row = db_conn.execute(
             "SELECT user_id FROM messages WHERE ts = ?",
@@ -171,11 +170,11 @@ class TestInsertMessage:
 
     def test_insert_message_deduplicates(self, db_conn):
         """insert_message silently ignores duplicates."""
-        upsert_channel(db_conn, "C123", "general", 0)
-        upsert_user(db_conn, "U123", "john", "John")
+        upsert_channel(db_conn, Channel(id="C123", name="general"))
+        upsert_user(db_conn, User(id="U123", name="john"))
 
-        insert_message(db_conn, "1234567890.000100", "C123", "U123", "Hello", None)
-        insert_message(db_conn, "1234567890.000100", "C123", "U999", "Different", None)
+        insert_message(db_conn, "C123", Message(ts="1234567890.000100", user="U123", text="Hello"))
+        insert_message(db_conn, "C123", Message(ts="1234567890.000100", user=None, text="Different"))
 
         row = db_conn.execute(
             "SELECT user_id, text FROM messages WHERE ts = ?",
@@ -188,10 +187,10 @@ class TestInsertMessage:
 
     def test_insert_message_with_thread_ts(self, db_conn):
         """insert_message stores thread_ts for replies."""
-        upsert_channel(db_conn, "C123", "general", 0)
-        upsert_user(db_conn, "U123", "john", "John")
+        upsert_channel(db_conn, Channel(id="C123", name="general"))
+        upsert_user(db_conn, User(id="U123", name="john"))
 
-        insert_message(db_conn, "1234567890.000200", "C123", "U123", "Reply", "1234567890.000100")
+        insert_message(db_conn, "C123", Message(ts="1234567890.000200", user="U123", text="Reply", thread_ts="1234567890.000100"))
 
         row = db_conn.execute(
             "SELECT thread_ts FROM messages WHERE ts = ?",
@@ -202,12 +201,12 @@ class TestInsertMessage:
 
     def test_insert_message_composite_key(self, db_conn):
         """insert_message composite key allows same ts in different channels."""
-        upsert_channel(db_conn, "C123", "general", 0)
-        upsert_channel(db_conn, "C456", "random", 0)
-        upsert_user(db_conn, "U123", "john", "John")
+        upsert_channel(db_conn, Channel(id="C123", name="general"))
+        upsert_channel(db_conn, Channel(id="C456", name="random"))
+        upsert_user(db_conn, User(id="U123", name="john"))
 
-        insert_message(db_conn, "1234567890.000100", "C123", "U123", "Msg in C123", None)
-        insert_message(db_conn, "1234567890.000100", "C456", "U123", "Msg in C456", None)
+        insert_message(db_conn, "C123", Message(ts="1234567890.000100", user="U123", text="Msg in C123"))
+        insert_message(db_conn, "C456", Message(ts="1234567890.000100", user="U123", text="Msg in C456"))
 
         rows = db_conn.execute(
             "SELECT channel_id FROM messages WHERE ts = ? ORDER BY channel_id",
@@ -224,7 +223,7 @@ class TestInsertFile:
 
     def test_insert_file_basic(self, db_conn):
         """insert_file stores file record."""
-        insert_file(db_conn, "F123", "1234567890.000100", None, "https://files.slack.com/...")
+        insert_file(db_conn, File(id="F123", message_ts="1234567890.000100", url="https://files.slack.com/..."))
 
         row = db_conn.execute(
             "SELECT id, message_ts, local_path, url FROM files WHERE id = ?",
@@ -238,7 +237,7 @@ class TestInsertFile:
 
     def test_insert_file_with_local_path(self, db_conn):
         """insert_file stores local_path after download."""
-        insert_file(db_conn, "F123", "1234567890.000100", "/tmp/file.txt", "https://...")
+        insert_file(db_conn, File(id="F123", message_ts="1234567890.000100", url="https://...", local_path="/tmp/file.txt"))
 
         row = db_conn.execute(
             "SELECT local_path FROM files WHERE id = ?",
@@ -249,8 +248,8 @@ class TestInsertFile:
 
     def test_insert_file_replaces_existing(self, db_conn):
         """insert_file replaces existing file (idempotent)."""
-        insert_file(db_conn, "F123", "1234567890.000100", None, "https://old.url")
-        insert_file(db_conn, "F123", "1234567890.000100", "/tmp/file.txt", "https://new.url")
+        insert_file(db_conn, File(id="F123", message_ts="1234567890.000100", url="https://old.url"))
+        insert_file(db_conn, File(id="F123", message_ts="1234567890.000100", url="https://new.url", local_path="/tmp/file.txt"))
 
         row = db_conn.execute(
             "SELECT local_path, url FROM files WHERE id = ?",
@@ -271,7 +270,7 @@ class TestSyncState:
 
     def test_update_sync_state_new_channel(self, db_conn):
         """update_sync_state creates new sync_state record."""
-        upsert_channel(db_conn, "C123", "general", 0)
+        upsert_channel(db_conn, Channel(id="C123", name="general"))
         update_sync_state(db_conn, "C123", "1234567890.000100")
 
         result = get_last_fetched_ts(db_conn, "C123")
@@ -279,7 +278,7 @@ class TestSyncState:
 
     def test_update_sync_state_replaces_existing(self, db_conn):
         """update_sync_state updates existing sync_state."""
-        upsert_channel(db_conn, "C123", "general", 0)
+        upsert_channel(db_conn, Channel(id="C123", name="general"))
         update_sync_state(db_conn, "C123", "1234567890.000100")
         update_sync_state(db_conn, "C123", "1234567890.000200")
 
@@ -293,7 +292,7 @@ class TestTransaction:
     def test_transaction_commits_on_success(self, db_conn):
         """transaction context manager commits on success."""
         with transaction(db_conn):
-            upsert_channel(db_conn, "C123", "general", 0)
+            upsert_channel(db_conn, Channel(id="C123", name="general"))
 
         row = db_conn.execute(
             "SELECT name FROM channels WHERE id = ?",
@@ -306,7 +305,7 @@ class TestTransaction:
         """transaction context manager rolls back on exception."""
         with pytest.raises(ValueError):
             with transaction(db_conn):
-                upsert_channel(db_conn, "C123", "general", 0)
+                upsert_channel(db_conn, Channel(id="C123", name="general"))
                 raise ValueError("Test error")
 
         row = db_conn.execute(
@@ -318,19 +317,18 @@ class TestTransaction:
 
     def test_transaction_isolation_with_rollback(self, db_conn):
         """transaction isolation prevents partial writes."""
-        upsert_channel(db_conn, "C123", "general", 0)
-        upsert_user(db_conn, "U123", "john", "John")
+        upsert_channel(db_conn, Channel(id="C123", name="general"))
+        upsert_user(db_conn, User(id="U123", name="john"))
 
         with pytest.raises(Exception):
             with transaction(db_conn):
-                insert_message(db_conn, "1234567890.000100", "C123", "U123", "Msg", None)
+                insert_message(db_conn, "C123", Message(ts="1234567890.000100", user="U123", text="Msg"))
                 # Force foreign key violation
                 db_conn.execute(
                     "INSERT INTO messages (ts, channel_id, user_id) VALUES (?, ?, ?)",
                     ("1234567890.000200", "C999", "U123")
                 )
 
-        # Original message should not be present
         row = db_conn.execute(
             "SELECT COUNT(*) as count FROM messages WHERE ts = ?",
             ("1234567890.000100",)
@@ -345,12 +343,12 @@ class TestForeignKeyConstraints:
     def test_message_requires_valid_channel(self, db_conn):
         """insert_message fails without valid channel."""
         with pytest.raises(sqlite3.IntegrityError):
-            insert_message(db_conn, "1234567890.000100", "C999", None, "Test", None)
+            insert_message(db_conn, "C999", Message(ts="1234567890.000100", text="Test"))
 
     def test_message_allows_null_user(self, db_conn):
         """insert_message allows null user_id (app messages)."""
-        upsert_channel(db_conn, "C123", "general", 0)
-        insert_message(db_conn, "1234567890.000100", "C123", None, "App msg", None)
+        upsert_channel(db_conn, Channel(id="C123", name="general"))
+        insert_message(db_conn, "C123", Message(ts="1234567890.000100", text="App msg"))
 
         row = db_conn.execute(
             "SELECT user_id FROM messages WHERE ts = ?",

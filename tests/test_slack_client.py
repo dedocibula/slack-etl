@@ -1,8 +1,8 @@
 import pytest
-from unittest.mock import Mock, patch, MagicMock
+from unittest.mock import Mock, patch
 from slack_sdk.errors import SlackApiError
-import time
 
+from models import Channel, File, Message, User
 from slack_client import SlackClient
 
 
@@ -37,15 +37,11 @@ class TestCallWithRetry:
             client._call_with_retry(mock_fn)
 
         assert "invalid_token" in str(exc_info.value)
-        # Should fail on first attempt
         assert mock_fn.call_count == 1
 
     def test_call_with_retry_sleeps_on_429(self, mock_webclient):
         """_call_with_retry sleeps on rate limit and retries."""
-        error_resp = {
-            "error": "ratelimited",
-            "headers": {"Retry-After": "1"}
-        }
+        error_resp = {"error": "ratelimited", "headers": {"Retry-After": "1"}}
         mock_fn = Mock(
             side_effect=[
                 SlackApiError(message="Rate limited", response=error_resp),
@@ -64,10 +60,7 @@ class TestCallWithRetry:
 
     def test_call_with_retry_max_retries_exhausted(self, mock_webclient):
         """_call_with_retry raises after exhausting retries."""
-        error_resp = {
-            "error": "ratelimited",
-            "headers": {"Retry-After": "0"}
-        }
+        error_resp = {"error": "ratelimited", "headers": {"Retry-After": "0"}}
         mock_fn = Mock(
             side_effect=SlackApiError(message="Rate limited", response=error_resp)
         )
@@ -79,7 +72,6 @@ class TestCallWithRetry:
                 client._call_with_retry(mock_fn)
 
         assert "Max retries" in str(exc_info.value)
-        # Should have tried MAX_RETRIES times
         assert mock_fn.call_count == 10  # MAX_RETRIES = 10
 
     def test_call_with_retry_default_retry_after(self, mock_webclient):
@@ -103,12 +95,11 @@ class TestCallWithRetry:
 class TestIterUsers:
     """Test user iteration."""
 
-    def test_iter_users_yields_users(self, mock_webclient):
-        """iter_users yields user dicts."""
+    def test_iter_users_yields_user_dataclasses(self, mock_webclient):
+        """iter_users yields User dataclass instances."""
         mock_webclient.users_list.return_value = {
             "members": [
                 {"id": "U123", "name": "john", "real_name": "John Doe", "deleted": False, "is_bot": False},
-                {"id": "U456", "name": "jane", "real_name": "Jane Smith", "deleted": False, "is_bot": False},
             ],
             "response_metadata": {"next_cursor": ""}
         }
@@ -116,10 +107,11 @@ class TestIterUsers:
         client = SlackClient("test-token")
         users = list(client.iter_users())
 
-        assert len(users) == 2
-        assert users[0]["id"] == "U123"
-        assert users[0]["name"] == "john"
-        assert users[1]["id"] == "U456"
+        assert len(users) == 1
+        assert isinstance(users[0], User)
+        assert users[0].id == "U123"
+        assert users[0].name == "john"
+        assert users[0].real_name == "John Doe"
 
     def test_iter_users_skips_deleted(self, mock_webclient):
         """iter_users filters deleted users."""
@@ -136,7 +128,7 @@ class TestIterUsers:
         users = list(client.iter_users())
 
         assert len(users) == 2
-        assert all(u["id"] != "U456" for u in users)
+        assert all(u.id != "U456" for u in users)
 
     def test_iter_users_skips_bots(self, mock_webclient):
         """iter_users filters bot users."""
@@ -153,7 +145,7 @@ class TestIterUsers:
         users = list(client.iter_users())
 
         assert len(users) == 2
-        assert all(u["id"] != "B456" for u in users)
+        assert all(u.id != "B456" for u in users)
 
     def test_iter_users_pagination(self, mock_webclient):
         """iter_users handles pagination."""
@@ -172,20 +164,20 @@ class TestIterUsers:
         users = list(client.iter_users())
 
         assert len(users) == 2
-        assert users[0]["id"] == "U1"
-        assert users[1]["id"] == "U2"
+        assert users[0].id == "U1"
+        assert users[1].id == "U2"
         assert mock_webclient.users_list.call_count == 2
 
 
 class TestIterChannels:
     """Test channel iteration."""
 
-    def test_iter_channels_yields_channels(self, mock_webclient):
-        """iter_channels yields channel dicts."""
+    def test_iter_channels_yields_channel_dataclasses(self, mock_webclient):
+        """iter_channels yields Channel dataclass instances."""
         mock_webclient.conversations_list.return_value = {
             "channels": [
-                {"id": "C123", "name": "general", "is_private": False, "is_archived": False},
-                {"id": "C456", "name": "random", "is_private": False, "is_archived": False},
+                {"id": "C123", "name": "general", "is_private": False},
+                {"id": "C456", "name": "random", "is_private": False},
             ],
             "response_metadata": {"next_cursor": ""}
         }
@@ -194,22 +186,21 @@ class TestIterChannels:
         channels = list(client.iter_channels())
 
         assert len(channels) == 2
-        assert channels[0]["id"] == "C123"
-        assert channels[0]["name"] == "general"
+        assert isinstance(channels[0], Channel)
+        assert channels[0].id == "C123"
+        assert channels[0].name == "general"
+        assert channels[0].is_private is False
 
     def test_iter_channels_requests_exclude_archived(self, mock_webclient):
         """iter_channels requests exclude_archived=True."""
         mock_webclient.conversations_list.return_value = {
-            "channels": [
-                {"id": "C123", "name": "general", "is_private": False},
-            ],
+            "channels": [],
             "response_metadata": {"next_cursor": ""}
         }
 
         client = SlackClient("test-token")
         list(client.iter_channels())
 
-        # Verify exclude_archived is passed
         call_kwargs = mock_webclient.conversations_list.call_args[1]
         assert call_kwargs["exclude_archived"] is True
 
@@ -227,10 +218,8 @@ class TestIterChannels:
         channels = list(client.iter_channels())
 
         assert len(channels) == 2
-        public_channels = [c for c in channels if not c["is_private"]]
-        private_channels = [c for c in channels if c["is_private"]]
-        assert len(public_channels) == 1
-        assert len(private_channels) == 1
+        assert any(c.is_private is False for c in channels)
+        assert any(c.is_private is True for c in channels)
 
     def test_iter_channels_requests_correct_types(self, mock_webclient):
         """iter_channels requests public_channel,private_channel."""
@@ -242,7 +231,6 @@ class TestIterChannels:
         client = SlackClient("test-token")
         list(client.iter_channels())
 
-        # Verify the types parameter
         call_kwargs = mock_webclient.conversations_list.call_args[1]
         assert call_kwargs["types"] == "public_channel,private_channel"
 
@@ -250,11 +238,11 @@ class TestIterChannels:
 class TestIterHistory:
     """Test message history iteration."""
 
-    def test_iter_history_yields_messages(self, mock_webclient):
-        """iter_history yields message dicts."""
+    def test_iter_history_yields_message_dataclasses(self, mock_webclient):
+        """iter_history yields Message dataclass instances."""
         mock_webclient.conversations_history.return_value = {
             "messages": [
-                {"ts": "100", "user": "U1", "text": "Hello", "thread_ts": None, "files": []},
+                {"ts": "100", "user": "U1", "text": "Hello", "files": []},
             ],
             "response_metadata": {"next_cursor": ""}
         }
@@ -263,12 +251,12 @@ class TestIterHistory:
         messages = list(client.iter_history("C123"))
 
         assert len(messages) == 1
-        assert messages[0]["ts"] == "100"
-        assert messages[0]["text"] == "Hello"
+        assert isinstance(messages[0], Message)
+        assert messages[0].ts == "100"
+        assert messages[0].text == "Hello"
 
     def test_iter_history_reverses_message_order(self, mock_webclient):
         """iter_history reverses API's newest-first order."""
-        # API returns newest first
         mock_webclient.conversations_history.return_value = {
             "messages": [
                 {"ts": "300", "user": "U1", "text": "Latest"},
@@ -281,10 +269,9 @@ class TestIterHistory:
         client = SlackClient("test-token")
         messages = list(client.iter_history("C123"))
 
-        # Should be oldest-first
-        assert messages[0]["ts"] == "100"
-        assert messages[1]["ts"] == "200"
-        assert messages[2]["ts"] == "300"
+        assert messages[0].ts == "100"
+        assert messages[1].ts == "200"
+        assert messages[2].ts == "300"
 
     def test_iter_history_passes_oldest_parameter(self, mock_webclient):
         """iter_history passes oldest as exclusive lower bound."""
@@ -318,17 +305,15 @@ class TestIterHistory:
         assert len(messages) == 2
         assert mock_webclient.conversations_history.call_count == 2
 
-    def test_iter_history_with_files(self, mock_webclient):
-        """iter_history yields files array."""
+    def test_iter_history_parses_files_into_dataclasses(self, mock_webclient):
+        """iter_history yields File dataclasses nested in Message."""
         mock_webclient.conversations_history.return_value = {
             "messages": [
                 {
                     "ts": "100",
                     "user": "U1",
                     "text": "With file",
-                    "files": [
-                        {"id": "F123", "url_private_download": "https://..."}
-                    ]
+                    "files": [{"id": "F123", "url_private_download": "https://..."}]
                 }
             ],
             "response_metadata": {"next_cursor": ""}
@@ -337,20 +322,17 @@ class TestIterHistory:
         client = SlackClient("test-token")
         messages = list(client.iter_history("C123"))
 
-        assert len(messages[0]["files"]) == 1
-        assert messages[0]["files"][0]["id"] == "F123"
+        assert len(messages[0].files) == 1
+        assert isinstance(messages[0].files[0], File)
+        assert messages[0].files[0].id == "F123"
+        assert messages[0].files[0].message_ts == "100"
+        assert messages[0].files[0].url == "https://..."
 
     def test_iter_history_with_thread_ts(self, mock_webclient):
         """iter_history yields thread_ts for replies."""
         mock_webclient.conversations_history.return_value = {
             "messages": [
-                {
-                    "ts": "200",
-                    "user": "U1",
-                    "text": "Reply",
-                    "thread_ts": "100",
-                    "files": []
-                }
+                {"ts": "200", "user": "U1", "text": "Reply", "thread_ts": "100"}
             ],
             "response_metadata": {"next_cursor": ""}
         }
@@ -358,19 +340,18 @@ class TestIterHistory:
         client = SlackClient("test-token")
         messages = list(client.iter_history("C123"))
 
-        assert messages[0]["thread_ts"] == "100"
+        assert messages[0].thread_ts == "100"
 
 
 class TestIterReplies:
     """Test thread reply iteration."""
 
-    def test_iter_replies_yields_replies(self, mock_webclient):
-        """iter_replies yields reply message dicts."""
+    def test_iter_replies_yields_message_dataclasses(self, mock_webclient):
+        """iter_replies yields Message dataclass instances."""
         mock_webclient.conversations_replies.return_value = {
             "messages": [
                 {"ts": "100", "user": "U1", "text": "Parent"},
                 {"ts": "110", "user": "U2", "text": "Reply 1"},
-                {"ts": "120", "user": "U3", "text": "Reply 2"},
             ],
             "response_metadata": {"next_cursor": ""}
         }
@@ -378,10 +359,9 @@ class TestIterReplies:
         client = SlackClient("test-token")
         replies = list(client.iter_replies("C123", "100"))
 
-        # Parent (index 0) should be skipped
-        assert len(replies) == 2
-        assert replies[0]["ts"] == "110"
-        assert replies[1]["ts"] == "120"
+        assert len(replies) == 1
+        assert isinstance(replies[0], Message)
+        assert replies[0].ts == "110"
 
     def test_iter_replies_skips_parent_first_page_only(self, mock_webclient):
         """iter_replies skips parent only on first page."""
@@ -405,11 +385,10 @@ class TestIterReplies:
         client = SlackClient("test-token")
         replies = list(client.iter_replies("C123", "100"))
 
-        # Should have 3 replies (parent skipped on first page)
         assert len(replies) == 3
-        assert replies[0]["ts"] == "110"
-        assert replies[1]["ts"] == "120"
-        assert replies[2]["ts"] == "130"
+        assert replies[0].ts == "110"
+        assert replies[1].ts == "120"
+        assert replies[2].ts == "130"
 
     def test_iter_replies_passes_thread_ts(self, mock_webclient):
         """iter_replies passes thread_ts to API."""
@@ -459,7 +438,6 @@ class TestDownloadFile:
                 client.download_file("https://files.slack.com/...", "/tmp/file.txt")
 
                 call_kwargs = mock_get.call_args[1]
-                assert "Authorization" in call_kwargs["headers"]
                 assert call_kwargs["headers"]["Authorization"] == "Bearer test-token"
 
     def test_download_file_raises_on_http_error(self, mock_webclient):

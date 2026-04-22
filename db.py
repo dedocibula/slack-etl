@@ -2,6 +2,8 @@ import sqlite3
 from contextlib import contextmanager
 from typing import Optional
 
+from models import Channel, File, Message, User
+
 # ============================================================================
 # SQL Schema Statements
 # ============================================================================
@@ -109,48 +111,39 @@ def transaction(conn: sqlite3.Connection):
 # ============================================================================
 
 
-def upsert_channel(conn: sqlite3.Connection, id: str, name: str, is_private: int) -> None:
+def upsert_channel(conn: sqlite3.Connection, channel: Channel) -> None:
     """Insert or replace channel."""
     conn.execute(
         "INSERT OR REPLACE INTO channels (id, name, is_private) VALUES (?, ?, ?)",
-        (id, name, is_private),
+        (channel.id, channel.name, int(channel.is_private)),
     )
 
 
-def upsert_user(conn: sqlite3.Connection, id: str, name: str, real_name: Optional[str]) -> None:
+def upsert_user(conn: sqlite3.Connection, user: User) -> None:
     """Insert or replace user."""
     conn.execute(
         "INSERT OR REPLACE INTO users (id, name, real_name) VALUES (?, ?, ?)",
-        (id, name, real_name),
+        (user.id, user.name, user.real_name),
     )
 
 
 def insert_message(
     conn: sqlite3.Connection,
-    ts: str,
     channel_id: str,
-    user_id: Optional[str],
-    text: Optional[str],
-    thread_ts: Optional[str],
+    msg: Message,
 ) -> None:
     """Insert message. Silently ignores duplicates on (ts, channel_id)."""
     conn.execute(
         "INSERT OR IGNORE INTO messages (ts, channel_id, user_id, text, thread_ts) VALUES (?, ?, ?, ?, ?)",
-        (ts, channel_id, user_id, text, thread_ts),
+        (msg.ts, channel_id, msg.user, msg.text, msg.thread_ts),
     )
 
 
-def insert_file(
-    conn: sqlite3.Connection,
-    id: str,
-    message_ts: str,
-    local_path: Optional[str],
-    url: Optional[str],
-) -> None:
+def insert_file(conn: sqlite3.Connection, f: File) -> None:
     """Insert file record."""
     conn.execute(
         "INSERT OR REPLACE INTO files (id, message_ts, local_path, url) VALUES (?, ?, ?, ?)",
-        (id, message_ts, local_path, url),
+        (f.id, f.message_ts, f.local_path, f.url),
     )
 
 

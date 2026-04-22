@@ -1,10 +1,10 @@
+import dataclasses
 import logging
 import logging.handlers
 import os
 import shutil
 import sqlite3
 import sys
-from typing import Optional
 
 from dotenv import load_dotenv
 
@@ -140,7 +140,7 @@ def verify_environment() -> str:
 # ============================================================================
 
 
-def _extract(slack: SlackClient, conn: sqlite3.Connection) -> None:
+def extract(slack: SlackClient, conn: sqlite3.Connection) -> None:
     """Extract all users, channels, messages, threads, and file records."""
     logger = logging.getLogger(__name__)
 
@@ -148,57 +148,49 @@ def _extract(slack: SlackClient, conn: sqlite3.Connection) -> None:
     known_user_ids: set[str] = set()
     user_count = 0
     for user in slack.iter_users():
-        db.upsert_user(conn, user["id"], user["name"], user.get("real_name"))
-        known_user_ids.add(user["id"])
+        db.upsert_user(conn, user)
+        known_user_ids.add(user.id)
         user_count += 1
     logger.info("Synced %d users", user_count)
 
     # Phase 2: Extract channels → messages → replies
     total_messages = 0
     for channel in slack.iter_channels():
-        channel_id = channel["id"]
-        channel_name = channel["name"]
-        db.upsert_channel(conn, channel_id, channel_name, int(channel["is_private"]))
+        db.upsert_channel(conn, channel)
 
-        last_ts = db.get_last_fetched_ts(conn, channel_id)
-        logger.info("Processing #%s (oldest=%s)", channel_name, last_ts or "beginning")
+        last_ts = db.get_last_fetched_ts(conn, channel.id)
+        logger.info("Processing #%s (oldest=%s)", channel.name, last_ts or "beginning")
 
         msg_count = 0
-        last_msg_ts: Optional[str] = None
+        last_msg_ts = None
 
-        for msg in slack.iter_history(channel_id, oldest=last_ts):
-            ts = msg["ts"]
-            # Null out user_id if not in our DB (deleted/bot users are filtered at import)
-            user_id = msg.get("user")
-            if user_id not in known_user_ids:
-                user_id = None
-            db.insert_message(conn, ts, channel_id, user_id, msg.get("text"), msg.get("thread_ts"))
+        for msg in slack.iter_history(channel.id, oldest=last_ts):
+            # Null out user if not in our DB (deleted/bot users are filtered at import)
+            if msg.user not in known_user_ids:
+                msg = dataclasses.replace(msg, user=None)
+            db.insert_message(conn, channel.id, msg)
 
-            for f in msg.get("files", []):
-                if f.get("id"):
-                    db.insert_file(conn, f["id"], ts, None, f.get("url_private_download"))
+            for f in msg.files:
+                db.insert_file(conn, f)
 
             # Fetch replies if this message is a thread parent (ts == thread_ts)
-            thread_ts = msg.get("thread_ts")
-            if thread_ts and ts == thread_ts:
-                for reply in slack.iter_replies(channel_id, thread_ts):
-                    reply_user_id = reply.get("user")
-                    if reply_user_id not in known_user_ids:
-                        reply_user_id = None
-                    db.insert_message(conn, reply["ts"], channel_id, reply_user_id, reply.get("text"), reply.get("thread_ts"))
-                    for f in reply.get("files", []):
-                        if f.get("id"):
-                            db.insert_file(conn, f["id"], reply["ts"], None, f.get("url_private_download"))
+            if msg.thread_ts and msg.ts == msg.thread_ts:
+                for reply in slack.iter_replies(channel.id, msg.thread_ts):
+                    if reply.user not in known_user_ids:
+                        reply = dataclasses.replace(reply, user=None)
+                    db.insert_message(conn, channel.id, reply)
+                    for f in reply.files:
+                        db.insert_file(conn, f)
 
-            last_msg_ts = ts
+            last_msg_ts = msg.ts
             msg_count += 1
 
         # Commit sync_state only after the full channel completes
         if last_msg_ts:
             with db.transaction(conn):
-                db.update_sync_state(conn, channel_id, last_msg_ts)
+                db.update_sync_state(conn, channel.id, last_msg_ts)
 
-        logger.info("Processed #%s: %d messages", channel_name, msg_count)
+        logger.info("Processed #%s: %d messages", channel.name, msg_count)
         total_messages += msg_count
 
     logger.info("Extraction complete: %d messages across all channels", total_messages)
@@ -223,7 +215,7 @@ def main() -> None:
         db.init_schema(conn)
         logger.info("Database initialized")
 
-        _extract(SlackClient(token), conn)
+        extract(SlackClient(token), conn)
 
         notifier.notify("slack-etl complete", "Extraction finished successfully")
         logger.info("=== slack-etl pipeline complete ===")
