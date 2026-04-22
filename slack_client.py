@@ -50,7 +50,10 @@ class SlackClient:
                     raise
 
         # Exhausted retries
-        raise SlackApiError(f"Max retries ({MAX_RETRIES}) exhausted for rate-limited endpoint")
+        raise SlackApiError(
+            message=f"Max retries ({MAX_RETRIES}) exhausted for rate-limited endpoint",
+            response={"error": "ratelimited"}
+        )
 
     def iter_users(self) -> Iterator[dict]:
         """
