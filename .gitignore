@@ -71,9 +71,10 @@ output/
 *.srt
 .cache/
 
-# ─── slack-etl runtime outputs ────────────────────────
+# ─── slack-etl runtime outputs & throwaway scripts ────
 database.sqlite*
 data/
 _attachments/
 logs/
 *.plist
+probe_*.py
