@@ -2,6 +2,7 @@ import sqlite3
 from contextlib import contextmanager
 from typing import Iterator, Optional
 
+from config import DB_PATH
 from models import Channel, File, Message, User
 
 # ============================================================================
@@ -69,7 +70,7 @@ CREATE_SYNC_STATE = """
 # ============================================================================
 
 
-def get_connection(db_path: str = "database.sqlite") -> sqlite3.Connection:
+def get_connection(db_path: str = DB_PATH) -> sqlite3.Connection:
     """Open connection with WAL mode, row factory, and explicit transaction control."""
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row

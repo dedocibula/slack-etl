@@ -80,7 +80,7 @@ def _render_message(msg: Message, user_map: dict[str, User], prefix: str = "") -
         ATTACHMENT_TEMPLATE.format(
             prefix=prefix,
             filename=_filename_from_url(f.url, f.id),
-            path=f"../../{ATTACHMENTS_DIR}/{f.id}",
+            path=f"../../{os.path.basename(ATTACHMENTS_DIR)}/{f.id}",
         )
         for f in msg.files
         if f.local_path is not None
