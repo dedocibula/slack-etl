@@ -5,9 +5,15 @@ import sqlite3
 from datetime import datetime
 
 import db
-import md
+from config import ATTACHMENTS_DIR, DATA_DIR
+from models import Message, User
 
-DATA_DIR = "data"
+# Edit these templates to change the output format.
+# Available variables:
+#   MESSAGE_TEMPLATE  : prefix, ts, username, text
+#   ATTACHMENT_TEMPLATE : prefix, filename, path
+MESSAGE_TEMPLATE = "{prefix}**[{ts}] <@{username}>:** {prefix}{text}"
+ATTACHMENT_TEMPLATE = "{prefix}![{filename}]({path})"
 
 logger = logging.getLogger(__name__)
 
@@ -36,14 +42,14 @@ def export_markdown(conn: sqlite3.Connection, data_dir: str = DATA_DIR) -> None:
                 conn, channel.id, month_start_dt.timestamp(), month_end_dt.timestamp()
             ):
                 msg = dataclasses.replace(msg, files=list(db.iter_files_for_message(conn, msg.ts)))
-                lines.append(md.render_message(msg, user_map))
+                lines.append(_render_message(msg, user_map))
                 msg_count += 1
 
                 replies = list(db.iter_thread_replies(conn, channel.id, msg.ts))
                 if replies:
                     for i, reply in enumerate(replies):
                         reply = dataclasses.replace(reply, files=list(db.iter_files_for_message(conn, reply.ts)))
-                        lines.append(md.render_message(reply, user_map, prefix="> "))
+                        lines.append(_render_message(reply, user_map, prefix="> "))
                         if i < len(replies) - 1:
                             lines.append(">")
                     lines.append("")
@@ -56,3 +62,43 @@ def export_markdown(conn: sqlite3.Connection, data_dir: str = DATA_DIR) -> None:
             total_files += 1
 
     logger.info("Export complete: %d file(s) written", total_files)
+
+
+def _render_message(msg: Message, user_map: dict[str, User], prefix: str = "") -> str:
+    """Render a Message (with pre-populated files) as a markdown string."""
+    u = user_map.get(msg.user) if msg.user else None
+    username = u.name if u else "unknown"
+    line = MESSAGE_TEMPLATE.format(
+        prefix=prefix,
+        ts=_ts_to_str(msg.ts),
+        username=username,
+        text=msg.text or "",
+    )
+
+    attachment_lines = [
+        ATTACHMENT_TEMPLATE.format(
+            prefix=prefix,
+            filename=_filename_from_url(f.url, f.id),
+            path=f"../../{ATTACHMENTS_DIR}/{f.id}",
+        )
+        for f in msg.files
+        if f.local_path is not None
+    ]
+
+    if attachment_lines:
+        return line + "\n" + "\n".join(attachment_lines)
+    return line
+
+
+def _ts_to_str(ts: str) -> str:
+    """Convert a Slack float-string timestamp to 'YYYY-MM-DD HH:MM:SS'."""
+    return datetime.fromtimestamp(float(ts)).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _filename_from_url(url: str | None, file_id: str) -> str:
+    """Extract the filename from a Slack URL, falling back to file_id."""
+    if url:
+        name = url.rsplit("/", 1)[-1]
+        if name:
+            return name
+    return file_id

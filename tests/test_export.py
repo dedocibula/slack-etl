@@ -1,10 +1,8 @@
-import dataclasses
 from datetime import datetime
 
 import pytest
 
-import db as db_module
-import md
+import export
 from db import insert_file, insert_message, upsert_channel, upsert_user
 from export import export_markdown
 from models import Channel, File, Message, User
@@ -72,7 +70,7 @@ class TestExportMarkdown:
         content = open(f"{data_dir}/general/2026-04.md").read()
         assert "<@alice>" in content
         assert "hello world" in content
-        assert md.ts_to_str(ts(APR)) in content
+        assert export._ts_to_str(ts(APR)) in content
 
     def test_null_user_renders_unknown(self, db_conn, channel, data_dir):
         insert_message(db_conn, channel.id, Message(ts=ts(APR), user=None, text="bot message"))
@@ -148,8 +146,8 @@ class TestExportMarkdown:
         export_markdown(db_conn, data_dir)
 
         content = open(f"{data_dir}/general/2026-04.md").read()
-        assert f"../../_attachments/FA" in content
-        assert f"../../_attachments/FB" in content
+        assert "../../_attachments/FA" in content
+        assert "../../_attachments/FB" in content
 
     def test_past_month_gets_own_file(self, db_conn, channel, user, data_dir):
         import os
@@ -175,22 +173,22 @@ class TestExportMarkdown:
         assert os.path.exists(f"{data_dir}/dev/2026-04.md")
 
 
-class TestMdHelpers:
+class TestExportHelpers:
 
     def test_ts_to_str(self):
         dt = datetime(2026, 4, 15, 9, 15, 0)
-        assert md.ts_to_str(ts(dt)) == "2026-04-15 09:15:00"
+        assert export._ts_to_str(ts(dt)) == "2026-04-15 09:15:00"
 
     def test_filename_from_url(self):
-        assert md.filename_from_url("https://files.slack.com/files/report.pdf", "F1") == "report.pdf"
+        assert export._filename_from_url("https://files.slack.com/files/report.pdf", "F1") == "report.pdf"
 
     def test_filename_falls_back_to_id(self):
-        assert md.filename_from_url(None, "F99") == "F99"
+        assert export._filename_from_url(None, "F99") == "F99"
 
     def test_render_message_top_level(self):
         u = User(id="U1", name="bob")
         msg = Message(ts=ts(APR), user="U1", text="hey", files=[])
-        result = md.render_message(msg, {"U1": u})
+        result = export._render_message(msg, {"U1": u})
         assert "**[" in result
         assert "<@bob>" in result
         assert "hey" in result
@@ -199,11 +197,11 @@ class TestMdHelpers:
     def test_render_message_reply_prefix(self):
         u = User(id="U1", name="bob")
         msg = Message(ts=ts(APR), user="U1", text="reply text", files=[])
-        result = md.render_message(msg, {"U1": u}, prefix="> ")
+        result = export._render_message(msg, {"U1": u}, prefix="> ")
         assert result.startswith("> **[")
         assert "> reply text" in result
 
     def test_render_message_unknown_user(self):
         msg = Message(ts=ts(APR), user=None, text="anon", files=[])
-        result = md.render_message(msg, {})
+        result = export._render_message(msg, {})
         assert "<@unknown>" in result
