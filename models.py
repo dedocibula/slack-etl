@@ -22,6 +22,7 @@ class File:
     message_ts: str
     url: Optional[str] = None
     local_path: Optional[str] = None
+    size_bytes: Optional[int] = None
 
 
 @dataclass

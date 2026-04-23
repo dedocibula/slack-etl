@@ -8,6 +8,9 @@ from db import (
     upsert_user,
     insert_message,
     insert_file,
+    iter_pending_files,
+    iter_downloaded_files,
+    clear_file_download,
     get_last_fetched_ts,
     update_sync_state,
 )
@@ -226,7 +229,7 @@ class TestInsertFile:
         insert_file(db_conn, File(id="F123", message_ts="1234567890.000100", url="https://files.slack.com/..."))
 
         row = db_conn.execute(
-            "SELECT id, message_ts, local_path, url FROM files WHERE id = ?",
+            "SELECT id, message_ts, local_path, url, size_bytes FROM files WHERE id = ?",
             ("F123",)
         ).fetchone()
 
@@ -234,30 +237,107 @@ class TestInsertFile:
         assert row["message_ts"] == "1234567890.000100"
         assert row["local_path"] is None
         assert row["url"] == "https://files.slack.com/..."
+        assert row["size_bytes"] is None
 
-    def test_insert_file_with_local_path(self, db_conn):
-        """insert_file stores local_path after download."""
-        insert_file(db_conn, File(id="F123", message_ts="1234567890.000100", url="https://...", local_path="/tmp/file.txt"))
+    def test_insert_file_with_local_path_and_size(self, db_conn):
+        """insert_file stores local_path and size_bytes after download."""
+        insert_file(db_conn, File(id="F123", message_ts="1234567890.000100", url="https://...", local_path="/tmp/file.txt", size_bytes=1024))
 
         row = db_conn.execute(
-            "SELECT local_path FROM files WHERE id = ?",
+            "SELECT local_path, size_bytes FROM files WHERE id = ?",
             ("F123",)
         ).fetchone()
 
         assert row["local_path"] == "/tmp/file.txt"
+        assert row["size_bytes"] == 1024
 
     def test_insert_file_replaces_existing(self, db_conn):
         """insert_file replaces existing file (idempotent)."""
         insert_file(db_conn, File(id="F123", message_ts="1234567890.000100", url="https://old.url"))
-        insert_file(db_conn, File(id="F123", message_ts="1234567890.000100", url="https://new.url", local_path="/tmp/file.txt"))
+        insert_file(db_conn, File(id="F123", message_ts="1234567890.000100", url="https://new.url", local_path="/tmp/file.txt", size_bytes=2048))
 
         row = db_conn.execute(
-            "SELECT local_path, url FROM files WHERE id = ?",
+            "SELECT local_path, url, size_bytes FROM files WHERE id = ?",
             ("F123",)
         ).fetchone()
 
         assert row["local_path"] == "/tmp/file.txt"
         assert row["url"] == "https://new.url"
+        assert row["size_bytes"] == 2048
+
+
+class TestFileQueries:
+    """Test file query helpers for download tracking."""
+
+    def test_iter_pending_files_yields_undownloaded(self, db_conn):
+        """iter_pending_files yields files with url but no local_path."""
+        insert_file(db_conn, File(id="F1", message_ts="100", url="https://a.com/f1"))
+        insert_file(db_conn, File(id="F2", message_ts="100", url="https://a.com/f2", local_path="/tmp/f2", size_bytes=512))
+
+        pending = list(iter_pending_files(db_conn))
+
+        assert len(pending) == 1
+        assert pending[0].id == "F1"
+
+    def test_iter_pending_files_excludes_no_url(self, db_conn):
+        """iter_pending_files skips files with no url."""
+        insert_file(db_conn, File(id="F1", message_ts="100", url=None))
+
+        pending = list(iter_pending_files(db_conn))
+
+        assert len(pending) == 0
+
+    def test_iter_pending_files_returns_file_dataclass(self, db_conn):
+        """iter_pending_files yields File dataclass instances."""
+        insert_file(db_conn, File(id="F1", message_ts="100", url="https://a.com/f1"))
+
+        pending = list(iter_pending_files(db_conn))
+
+        assert isinstance(pending[0], File)
+        assert pending[0].url == "https://a.com/f1"
+        assert pending[0].local_path is None
+
+    def test_iter_downloaded_files_yields_completed(self, db_conn):
+        """iter_downloaded_files yields files with local_path and size_bytes."""
+        insert_file(db_conn, File(id="F1", message_ts="100", url="https://a.com/f1"))
+        insert_file(db_conn, File(id="F2", message_ts="100", url="https://a.com/f2", local_path="/tmp/f2", size_bytes=512))
+
+        downloaded = list(iter_downloaded_files(db_conn))
+
+        assert len(downloaded) == 1
+        assert downloaded[0].id == "F2"
+        assert downloaded[0].local_path == "/tmp/f2"
+        assert downloaded[0].size_bytes == 512
+
+    def test_iter_downloaded_files_excludes_no_size(self, db_conn):
+        """iter_downloaded_files skips files with local_path but no size_bytes (incomplete)."""
+        insert_file(db_conn, File(id="F1", message_ts="100", url="https://a.com/f1", local_path="/tmp/f1"))
+
+        downloaded = list(iter_downloaded_files(db_conn))
+
+        assert len(downloaded) == 0
+
+    def test_clear_file_download_resets_to_pending(self, db_conn):
+        """clear_file_download resets local_path and size_bytes to NULL."""
+        insert_file(db_conn, File(id="F1", message_ts="100", url="https://a.com/f1", local_path="/tmp/f1", size_bytes=1024))
+
+        clear_file_download(db_conn, "F1")
+
+        row = db_conn.execute(
+            "SELECT local_path, size_bytes FROM files WHERE id = ?", ("F1",)
+        ).fetchone()
+        assert row["local_path"] is None
+        assert row["size_bytes"] is None
+
+    def test_clear_file_download_makes_file_pending_again(self, db_conn):
+        """After clear_file_download, file appears in iter_pending_files."""
+        insert_file(db_conn, File(id="F1", message_ts="100", url="https://a.com/f1", local_path="/tmp/f1", size_bytes=1024))
+
+        clear_file_download(db_conn, "F1")
+
+        pending = list(iter_pending_files(db_conn))
+        assert len(pending) == 1
+        assert pending[0].id == "F1"
 
 
 class TestSyncState:

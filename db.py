@@ -1,6 +1,6 @@
 import sqlite3
 from contextlib import contextmanager
-from typing import Optional
+from typing import Iterator, Optional
 
 from models import Channel, File, Message, User
 
@@ -51,9 +51,11 @@ CREATE_FILES = """
         id        TEXT PRIMARY KEY,
         message_ts TEXT NOT NULL,
         local_path TEXT,
-        url       TEXT
+        url       TEXT,
+        size_bytes INTEGER
     )
 """
+
 
 CREATE_SYNC_STATE = """
     CREATE TABLE IF NOT EXISTS sync_state (
@@ -140,10 +142,38 @@ def insert_message(
 
 
 def insert_file(conn: sqlite3.Connection, f: File) -> None:
-    """Insert file record."""
+    """Insert or replace file record."""
     conn.execute(
-        "INSERT OR REPLACE INTO files (id, message_ts, local_path, url) VALUES (?, ?, ?, ?)",
-        (f.id, f.message_ts, f.local_path, f.url),
+        "INSERT OR REPLACE INTO files (id, message_ts, local_path, url, size_bytes) VALUES (?, ?, ?, ?, ?)",
+        (f.id, f.message_ts, f.local_path, f.url, f.size_bytes),
+    )
+
+
+def iter_pending_files(conn: sqlite3.Connection) -> Iterator[File]:
+    """Yield files that have a URL but have not been downloaded yet."""
+    rows = conn.execute(
+        "SELECT id, message_ts, url, local_path, size_bytes FROM files WHERE local_path IS NULL AND url IS NOT NULL"
+    ).fetchall()
+    for row in rows:
+        yield File(id=row["id"], message_ts=row["message_ts"], url=row["url"],
+                   local_path=row["local_path"], size_bytes=row["size_bytes"])
+
+
+def iter_downloaded_files(conn: sqlite3.Connection) -> Iterator[File]:
+    """Yield files that have been downloaded (local_path and size_bytes set)."""
+    rows = conn.execute(
+        "SELECT id, message_ts, url, local_path, size_bytes FROM files WHERE local_path IS NOT NULL AND size_bytes IS NOT NULL"
+    ).fetchall()
+    for row in rows:
+        yield File(id=row["id"], message_ts=row["message_ts"], url=row["url"],
+                   local_path=row["local_path"], size_bytes=row["size_bytes"])
+
+
+def clear_file_download(conn: sqlite3.Connection, file_id: str) -> None:
+    """Reset local_path and size_bytes to NULL so the file is re-queued for download."""
+    conn.execute(
+        "UPDATE files SET local_path = NULL, size_bytes = NULL WHERE id = ?",
+        (file_id,),
     )
 
 

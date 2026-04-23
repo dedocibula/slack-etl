@@ -197,6 +197,43 @@ def extract(slack: SlackClient, conn: sqlite3.Connection) -> None:
 
 
 # ============================================================================
+# Download
+# ============================================================================
+
+
+def download_attachments(slack: SlackClient, conn: sqlite3.Connection) -> None:
+    """Download all pending file attachments and verify previously downloaded ones."""
+    logger = logging.getLogger(__name__)
+
+    # Phase 1: Detect stale downloads (file deleted or truncated since last run)
+    for f in db.iter_downloaded_files(conn):
+        if not os.path.exists(f.local_path) or os.path.getsize(f.local_path) != f.size_bytes:
+            logger.warning("Stale file detected, re-queuing: %s (%s)", f.id, f.local_path)
+            db.clear_file_download(conn, f.id)
+
+    # Phase 2: Download pending files
+    failures = 0
+    downloaded = 0
+    for f in db.iter_pending_files(conn):
+        dest = os.path.join(ATTACHMENTS_DIR, f.id)
+        try:
+            slack.download_file(f.url, dest)
+            size = os.path.getsize(dest)
+            db.insert_file(conn, dataclasses.replace(f, local_path=dest, size_bytes=size))
+            downloaded += 1
+        except Exception as e:
+            logger.error("Failed to download file %s: %s", f.id, e)
+            failures += 1
+
+    logger.info("Downloads complete: %d downloaded, %d failed", downloaded, failures)
+    if failures:
+        notifier.notify(
+            "slack-etl: download failures",
+            f"{failures} file(s) failed to download — check logs",
+        )
+
+
+# ============================================================================
 # Main Pipeline
 # ============================================================================
 
@@ -215,9 +252,11 @@ def main() -> None:
         db.init_schema(conn)
         logger.info("Database initialized")
 
-        extract(SlackClient(token), conn)
+        slack = SlackClient(token)
+        extract(slack, conn)
+        download_attachments(slack, conn)
 
-        notifier.notify("slack-etl complete", "Extraction finished successfully")
+        notifier.notify("slack-etl complete", "Extraction and downloads finished successfully")
         logger.info("=== slack-etl pipeline complete ===")
 
     except Exception as e:
