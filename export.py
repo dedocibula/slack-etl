@@ -1,6 +1,7 @@
 import dataclasses
 import logging
 import os
+import re
 import sqlite3
 from datetime import datetime
 
@@ -72,7 +73,7 @@ def _render_message(msg: Message, user_map: dict[str, User], prefix: str = "") -
         prefix=prefix,
         ts=_ts_to_str(msg.ts),
         username=username,
-        text=msg.text or "",
+        text=_resolve_mentions(msg.text or "", user_map),
     )
 
     attachment_lines = [
@@ -88,6 +89,14 @@ def _render_message(msg: Message, user_map: dict[str, User], prefix: str = "") -
     if attachment_lines:
         return line + "\n" + "\n".join(attachment_lines)
     return line
+
+
+def _resolve_mentions(text: str, user_map: dict[str, User]) -> str:
+    """Replace <@USERID> patterns in text with <@username>, leaving unknown IDs as-is."""
+    def _replace(m: re.Match) -> str:
+        user = user_map.get(m.group(1))
+        return f"<@{user.name}>" if user else m.group(0)
+    return re.sub(r"<@([A-Z0-9]+)>", _replace, text)
 
 
 def _ts_to_str(ts: str) -> str:

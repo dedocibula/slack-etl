@@ -205,3 +205,57 @@ class TestExportHelpers:
         msg = Message(ts=ts(APR), user=None, text="anon", files=[])
         result = export._render_message(msg, {})
         assert "<@unknown>" in result
+
+
+class TestResolveMentions:
+
+    def test_known_user_resolved(self):
+        u = User(id="U1", name="alice")
+        result = export._resolve_mentions("hello <@U1>", {"U1": u})
+        assert result == "hello <@alice>"
+
+    def test_unknown_user_left_as_is(self):
+        result = export._resolve_mentions("hello <@UUNKNOWN>", {})
+        assert result == "hello <@UUNKNOWN>"
+
+    def test_multiple_mentions_in_one_message(self):
+        u1 = User(id="U1", name="alice")
+        u2 = User(id="U2", name="bob")
+        result = export._resolve_mentions("<@U1> and <@U2>", {"U1": u1, "U2": u2})
+        assert result == "<@alice> and <@bob>"
+
+    def test_mixed_known_and_unknown(self):
+        u1 = User(id="U1", name="alice")
+        result = export._resolve_mentions("<@U1> cc <@UGONE>", {"U1": u1})
+        assert result == "<@alice> cc <@UGONE>"
+
+    def test_no_mentions_unchanged(self):
+        result = export._resolve_mentions("plain text message", {})
+        assert result == "plain text message"
+
+    def test_empty_text(self):
+        result = export._resolve_mentions("", {})
+        assert result == ""
+
+    def test_mention_in_rendered_message_body(self):
+        """Integration: mention in message.text is resolved in the full rendered output."""
+        u1 = User(id="U1", name="alice")
+        u2 = User(id="U2", name="bob")
+        msg = Message(ts=ts(APR), user="U1", text="hey <@U2> how are you", files=[])
+        result = export._render_message(msg, {"U1": u1, "U2": u2})
+        assert "<@bob>" in result
+        assert "<@U2>" not in result
+
+    def test_mention_in_exported_file(self, db_conn, channel, user, data_dir):
+        """End-to-end: mention in stored message text is resolved in the .md file."""
+        from db import upsert_user
+        u2 = User(id="U2", name="bob")
+        upsert_user(db_conn, u2)
+        insert_message(db_conn, channel.id, Message(ts=ts(APR), user=user.id,
+                                                     text="ping <@U2> are you there"))
+
+        export_markdown(db_conn, data_dir)
+
+        content = open(f"{data_dir}/general/2026-04.md").read()
+        assert "<@bob>" in content
+        assert "<@U2>" not in content
