@@ -9,6 +9,7 @@ import sys
 from dotenv import load_dotenv
 
 import db
+import export
 import notifier
 from slack_client import SlackClient
 
@@ -255,8 +256,9 @@ def main() -> None:
         slack = SlackClient(token)
         extract(slack, conn)
         download_attachments(slack, conn)
+        export.export_markdown(conn)
 
-        notifier.notify("slack-etl complete", "Extraction and downloads finished successfully")
+        notifier.notify("slack-etl complete", "Extraction, downloads, and export finished successfully")
         logger.info("=== slack-etl pipeline complete ===")
 
     except Exception as e:

@@ -177,6 +177,73 @@ def clear_file_download(conn: sqlite3.Connection, file_id: str) -> None:
     )
 
 
+def build_user_map(conn: sqlite3.Connection) -> dict[str, User]:
+    """Return {user_id: User} for all users in the DB."""
+    rows = conn.execute("SELECT id, name, real_name FROM users").fetchall()
+    return {row["id"]: User(id=row["id"], name=row["name"], real_name=row["real_name"]) for row in rows}
+
+
+def iter_channels_from_db(conn: sqlite3.Connection) -> Iterator[Channel]:
+    """Yield all channels stored in the DB."""
+    rows = conn.execute("SELECT id, name, is_private FROM channels").fetchall()
+    for row in rows:
+        yield Channel(id=row["id"], name=row["name"], is_private=bool(row["is_private"]))
+
+
+def iter_distinct_months(conn: sqlite3.Connection, channel_id: str) -> Iterator[tuple[int, int]]:
+    """Yield (year, month) tuples for every calendar month that has messages in a channel, oldest first."""
+    rows = conn.execute(
+        """SELECT DISTINCT
+               CAST(strftime('%Y', datetime(CAST(ts AS REAL), 'unixepoch', 'localtime')) AS INTEGER) AS yr,
+               CAST(strftime('%m', datetime(CAST(ts AS REAL), 'unixepoch', 'localtime')) AS INTEGER) AS mo
+           FROM messages WHERE channel_id = ? ORDER BY yr, mo""",
+        (channel_id,),
+    ).fetchall()
+    for row in rows:
+        yield (row["yr"], row["mo"])
+
+
+def iter_top_level_messages(
+    conn: sqlite3.Connection, channel_id: str, month_start: float, month_end: float
+) -> Iterator[Message]:
+    """Yield top-level messages (not replies) for a channel within [month_start, month_end)."""
+    rows = conn.execute(
+        """SELECT ts, user_id, text, thread_ts FROM messages
+           WHERE channel_id = ?
+             AND CAST(ts AS REAL) >= ? AND CAST(ts AS REAL) < ?
+             AND (thread_ts IS NULL OR ts = thread_ts)
+           ORDER BY CAST(ts AS REAL)""",
+        (channel_id, month_start, month_end),
+    ).fetchall()
+    for row in rows:
+        yield Message(ts=row["ts"], user=row["user_id"], text=row["text"], thread_ts=row["thread_ts"])
+
+
+def iter_thread_replies(
+    conn: sqlite3.Connection, channel_id: str, thread_ts: str
+) -> Iterator[Message]:
+    """Yield replies for a thread, excluding the parent message, oldest first."""
+    rows = conn.execute(
+        """SELECT ts, user_id, text FROM messages
+           WHERE channel_id = ? AND thread_ts = ? AND ts != thread_ts
+           ORDER BY CAST(ts AS REAL)""",
+        (channel_id, thread_ts),
+    ).fetchall()
+    for row in rows:
+        yield Message(ts=row["ts"], user=row["user_id"], text=row["text"])
+
+
+def iter_files_for_message(conn: sqlite3.Connection, message_ts: str) -> Iterator[File]:
+    """Yield files attached to a given message timestamp."""
+    rows = conn.execute(
+        "SELECT id, message_ts, url, local_path, size_bytes FROM files WHERE message_ts = ?",
+        (message_ts,),
+    ).fetchall()
+    for row in rows:
+        yield File(id=row["id"], message_ts=row["message_ts"], url=row["url"],
+                   local_path=row["local_path"], size_bytes=row["size_bytes"])
+
+
 def get_last_fetched_ts(conn: sqlite3.Connection, channel_id: str) -> Optional[str]:
     """Get the last successfully fetched timestamp for a channel."""
     row = conn.execute(
