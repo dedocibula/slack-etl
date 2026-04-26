@@ -76,4 +76,4 @@ def test_full_pipeline(db_conn, tmp_path, monkeypatch):
     assert "nice work" in content
 
     # File attachment rendered
-    assert "![report.pdf](../../_attachments/F1)" in content
+    assert "![report.pdf](../../_attachments/F1_report.pdf)" in content

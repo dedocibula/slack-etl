@@ -2,9 +2,11 @@ import dataclasses
 import logging
 import logging.handlers
 import os
+import re
 import shutil
 import sqlite3
 import sys
+from urllib.parse import unquote, urlparse
 
 from dotenv import load_dotenv
 
@@ -199,6 +201,17 @@ def extract(slack: SlackClient, conn: sqlite3.Connection) -> None:
 # ============================================================================
 
 
+def _attachment_dest(f) -> str:
+    """Return the full destination path for a file: ATTACHMENTS_DIR/{id}_{safe_name}.
+
+    Falls back to bare {id} when the URL has no distinct filename segment.
+    """
+    path_seg = urlparse(f.url).path.rsplit("/", 1)[-1] if f.url else ""
+    safe = re.sub(r"[^A-Za-z0-9._\-]", "_", unquote(path_seg)).strip("_")
+    name = f"{f.id}_{safe}" if safe and safe != f.id else f.id
+    return os.path.join(ATTACHMENTS_DIR, name)
+
+
 def download_attachments(slack: SlackClient, conn: sqlite3.Connection) -> None:
     """Download all pending file attachments and verify previously downloaded ones."""
     logger = logging.getLogger(__name__)
@@ -213,7 +226,7 @@ def download_attachments(slack: SlackClient, conn: sqlite3.Connection) -> None:
     failures = 0
     downloaded = 0
     for f in db.iter_pending_files(conn):
-        dest = os.path.join(ATTACHMENTS_DIR, f.id)
+        dest = _attachment_dest(f)
         try:
             slack.download_file(f.url, dest)
             size = os.path.getsize(dest)
